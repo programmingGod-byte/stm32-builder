@@ -1,0 +1,82 @@
+name: Build STM32F722 Firmware (Cube HAL)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ARM GCC Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Sanity checks (fail early with clear message)
+          test -f Core/Src/main.c
+          test -f Core/Startup/startup_stm32f722zetx.s
+          test -f STM32F722ZETX_FLASH.ld
+
+          # Collect sources
+          CORE_SRC=$(find Core/Src -name '*.c' | tr '\n' ' ')
+          HAL_SRC=$(find Drivers/STM32F7xx_HAL_Driver/Src -name '*.c' | tr '\n' ' ')
+          SYS_SRC="Drivers/CMSIS/Device/ST/STM32F7xx/Source/Templates/system_stm32f7xx.c"
+
+          # Includes
+          INC_FLAGS="
+            -ICore/Inc
+            -IDrivers/STM32F7xx_HAL_Driver/Inc
+            -IDrivers/STM32F7xx_HAL_Driver/Inc/Legacy
+            -IDrivers/CMSIS/Device/ST/STM32F7xx/Include
+            -IDrivers/CMSIS/Include
+          "
+
+          # ---- CMSIS-DSP ----
+          # If you have a prebuilt DSP library in repo, link it (fast).
+          DSP_LIB=""
+          if ls Drivers/CMSIS/Lib/GCC/*cortexM7*math*.a >/dev/null 2>&1; then
+            DSP_LIB=$(ls Drivers/CMSIS/Lib/GCC/*cortexM7*math*.a | head -n 1)
+            echo "Using DSP library: $DSP_LIB"
+          else
+            echo "No prebuilt DSP lib found. If arm_math symbols fail, add CMSIS DSP library or compile DSP sources."
+          fi
+
+          arm-none-eabi-gcc \
+            -mcpu=cortex-m7 -mthumb \
+            -mfpu=fpv5-sp-d16 -mfloat-abi=hard \
+            -O2 -ffunction-sections -fdata-sections \
+            -Wall -Wextra \
+            -DUSE_HAL_DRIVER -DSTM32F722xx \
+            $INC_FLAGS \
+            -T STM32F722ZETX_FLASH.ld \
+            Core/Startup/startup_stm32f722zetx.s \
+            $SYS_SRC \
+            $HAL_SRC \
+            $CORE_SRC \
+            ${DSP_LIB:-} \
+            -Wl,--gc-sections \
+            -specs=nano.specs -specs=nosys.specs \
+            -lm \
+            -o firmware.elf
+
+          arm-none-eabi-size firmware.elf
+          arm-none-eabi-objcopy -O ihex firmware.elf firmware.hex
+          arm-none-eabi-objcopy -O binary firmware.elf firmware.bin
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            firmware.elf
+            firmware.hex
+            firmware.bin
